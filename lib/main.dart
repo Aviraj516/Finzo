@@ -1,0 +1,105 @@
+import 'package:flutter/material.dart';
+import 'screens/splash_screen.dart';
+import 'screens/home_screen.dart';
+import 'screens/streak_screen.dart';
+import 'screens/analytics_screen.dart';
+import 'screens/goals_screen.dart';
+
+void main() {
+runApp(const FinzoApp());
+}
+
+class FinzoApp extends StatelessWidget {
+const FinzoApp({super.key});
+
+@override
+Widget build(BuildContext context) {
+return MaterialApp(
+title: 'Finzo',
+debugShowCheckedModeBanner: false,
+theme: ThemeData(
+colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF4CAF50)),
+useMaterial3: true,
+fontFamily: 'Poppins',
+),
+home: const SplashScreen(), // 👈 App starts with splash
+);
+}
+}
+
+class FinzoShell extends StatefulWidget {
+const FinzoShell({super.key});
+
+@override
+State<FinzoShell> createState() => _FinzoShellState();
+}
+
+class _FinzoShellState extends State<FinzoShell> {
+int _currentIndex = 0;
+
+final List<Widget> _screens = [
+const HomeScreen(),      // 🌱 Plant + Balance
+const StreakScreen(),    // 🔥 Streak + XP
+const AnalyticsScreen(), // 📊 Category spending
+const GoalsScreen(),     // 🎯 Savings goals
+];
+
+@override
+Widget build(BuildContext context) {
+return Scaffold(
+body: IndexedStack(
+index: _currentIndex,
+children: _screens,
+),
+bottomNavigationBar: Container(
+decoration: BoxDecoration(
+color: Colors.white,
+boxShadow: [
+BoxShadow(
+color: Colors.black.withOpacity(0.08),
+blurRadius: 20,
+offset: const Offset(0, -4),
+),
+],
+),
+child: SafeArea(
+child: BottomNavigationBar(
+currentIndex: _currentIndex,
+onTap: (i) => setState(() => _currentIndex = i),
+type: BottomNavigationBarType.fixed,
+backgroundColor: Colors.white,
+selectedItemColor: const Color(0xFF4CAF50),
+unselectedItemColor: Colors.grey,
+selectedLabelStyle: const TextStyle(
+fontWeight: FontWeight.w600,
+fontSize: 11,
+),
+elevation: 0,
+items: const [
+BottomNavigationBarItem(
+icon: Text('🌱', style: TextStyle(fontSize: 22)),
+activeIcon: Text('🌳', style: TextStyle(fontSize: 24)),
+label: 'Home',
+),
+BottomNavigationBarItem(
+icon: Text('🔥', style: TextStyle(fontSize: 22)),
+activeIcon: Text('🔥', style: TextStyle(fontSize: 24)),
+label: 'Streak',
+),
+BottomNavigationBarItem(
+icon: Text('📊', style: TextStyle(fontSize: 22)),
+activeIcon: Text('📊', style: TextStyle(fontSize: 24)),
+label: 'Analytics',
+),
+BottomNavigationBarItem(
+icon: Text('🎯', style: TextStyle(fontSize: 22)),
+activeIcon: Text('🎯', style: TextStyle(fontSize: 24)),
+label: 'Goals',
+),
+],
+),
+),
+),
+);
+}
+}
