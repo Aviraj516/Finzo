@@ -1,266 +1,329 @@
 from fastapi import FastAPI, Form
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from datetime import datetime
+import sqlite3
+import json
 
 app = FastAPI()
 
-# -------------------------------
-# In-memory storage
-# -------------------------------
-user_budget = {
-    "xp": 0,
-    "streak": 0,
-    "badges": [],
-    "daily_bonus_given": False,
-    "goals": []
-}
+# ─────────────────────────────────────────────────────────────
+# SQLite persistence
+# ─────────────────────────────────────────────────────────────
+DB_PATH = "finzo.db"
 
-# -------------------------------
+def get_db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+def init_db():
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS config (
+            key   TEXT PRIMARY KEY,
+            value TEXT
+        )
+    """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS goals (
+            name   TEXT PRIMARY KEY,
+            target REAL,
+            saved  REAL DEFAULT 0
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+init_db()
+
+# ── Helpers ───────────────────────────────────────────────────
+def set_config(key, value):
+    conn = get_db()
+    conn.execute("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)",
+                 (key, json.dumps(value)))
+    conn.commit()
+    conn.close()
+
+def get_config(key, default=None):
+    conn = get_db()
+    row = conn.execute("SELECT value FROM config WHERE key=?", (key,)).fetchone()
+    conn.close()
+    return json.loads(row["value"]) if row else default
+
+def get_spent():
+    return get_config("spent", {"Food": 0, "Shopping": 0, "Travel": 0})
+
+def set_spent(spent):
+    set_config("spent", spent)
+
+def get_category_budget():
+    return get_config("category_budget", {"Food": 0, "Shopping": 0, "Travel": 0})
+
+def get_meta():
+    return get_config("meta", {"xp": 0, "streak": 0, "badges": []})
+
+def set_meta(meta):
+    set_config("meta", meta)
+
+# ─────────────────────────────────────────────────────────────
 # Setup Income
-# -------------------------------
+# ─────────────────────────────────────────────────────────────
 @app.post("/setup-income")
 def setup_income(income: float):
-
     savings = income * 0.2
-    needs = income * 0.5
-    wants = income * 0.3
+    needs   = income * 0.5
+    wants   = income * 0.3
 
-    user_budget["income"] = income
-    user_budget["needs"] = needs
-    user_budget["wants"] = wants
-    user_budget["monthly_savings"] = savings
-
-    user_budget["category_budget"] = {
-        "Food": needs * 0.4,
+    set_config("income",          income)
+    set_config("needs",           needs)
+    set_config("wants",           wants)
+    set_config("monthly_savings", savings)
+    set_config("category_budget", {
+        "Food":     needs * 0.4,
         "Shopping": wants * 0.5,
-        "Travel": wants * 0.5
+        "Travel":   wants * 0.5,
+    })
+    set_spent({"Food": 0, "Shopping": 0, "Travel": 0})
+    set_meta({"xp": 0, "streak": 0, "badges": []})
+
+    conn = get_db()
+    conn.execute("DELETE FROM goals")
+    conn.commit()
+    conn.close()
+
+    return {
+        "message": "Income configured successfully",
+        "income":  income,
+        "needs":   needs,
+        "wants":   wants,
+        "savings": savings,
     }
 
-    user_budget["spent"] = {
-        "Food": 0,
-        "Shopping": 0,
-        "Travel": 0
-    }
-
-    user_budget["xp"] = 0
-    user_budget["streak"] = 0
-    user_budget["badges"] = []
-    user_budget["daily_bonus_given"] = False
-    user_budget["goals"] = []
-
-    return {"message": "Income configured successfully"}
-
-
-# -------------------------------
+# ─────────────────────────────────────────────────────────────
 # Add Expense
-# -------------------------------
+# ─────────────────────────────────────────────────────────────
 @app.post("/add-expense")
 def add_expense(category: str, amount: float):
-
-    if "income" not in user_budget:
+    income = get_config("income")
+    if income is None:
         return {"error": "Setup income first"}
 
-    if category not in user_budget["spent"]:
+    if category not in ["Food", "Shopping", "Travel"]:
         return {"error": "Invalid category"}
 
-    user_budget["spent"][category] += amount
+    spent = get_spent()
+    spent[category] = spent.get(category, 0) + amount
+    set_spent(spent)
 
-    spent = user_budget["spent"][category]
-    limit = user_budget["category_budget"][category]
+    cat_budget = get_category_budget()
+    limit = cat_budget.get(category, 1)
+    risk  = (spent[category] / limit) * 100 if limit > 0 else 0
 
-    risk = (spent / limit) * 100
-
+    meta = get_meta()
     if risk < 50:
-        user_budget["xp"] += 10
-        user_budget["streak"] += 1
+        meta["xp"]     = meta.get("xp", 0) + 10
+        meta["streak"] = meta.get("streak", 0) + 1
     elif risk < 80:
-        user_budget["xp"] += 5
-        user_budget["streak"] = 0
+        meta["xp"]     = meta.get("xp", 0) + 5
+        meta["streak"] = 0
     else:
-        user_budget["streak"] = 0
+        meta["streak"] = 0
+    set_meta(meta)
 
-    return {"risk": round(risk, 2), "xp": user_budget["xp"]}
+    return {
+        "risk":     round(risk, 2),
+        "xp":       meta["xp"],
+        "streak":   meta["streak"],
+        "category": category,
+        "spent":    spent[category],
+    }
 
-
-# -------------------------------
-# SMS Expense Detection API
-# -------------------------------
+# ─────────────────────────────────────────────────────────────
+# SMS Expense Detection
+# ─────────────────────────────────────────────────────────────
 @app.post("/sms-expense")
 def sms_expense(amount: float = Form(...), merchant: str = Form(...)):
-
     merchant_lower = merchant.lower()
 
-    # Simple merchant AI detection
-    if "tea" in merchant_lower or "cafe" in merchant_lower:
+    if any(k in merchant_lower for k in ["tea", "cafe", "swiggy", "zomato", "food", "restaurant", "hotel", "dhaba"]):
         category = "Food"
-
-    elif "uber" in merchant_lower or "ola" in merchant_lower:
+    elif any(k in merchant_lower for k in ["uber", "ola", "rapido", "irctc", "travel", "metro", "bus", "train", "flight"]):
         category = "Travel"
-
-    elif "amazon" in merchant_lower or "flipkart" in merchant_lower:
+    elif any(k in merchant_lower for k in ["amazon", "flipkart", "myntra", "shop", "store", "mall", "mart"]):
         category = "Shopping"
-
     elif amount < 100:
         category = "Food"
-
     else:
         category = "Shopping"
 
     result = add_expense(category, amount)
 
     return {
-        "merchant": merchant,
+        "merchant":          merchant,
         "detected_category": category,
-        "expense_result": result
+        "expense_result":    result,
     }
 
-
-# -------------------------------
-# Create Savings Goal
-# -------------------------------
+# ─────────────────────────────────────────────────────────────
+# FIX #12: Create Goal — now uses JSON body, no URL encoding issues
+# ─────────────────────────────────────────────────────────────
 @app.post("/create-goal")
 def create_goal(goal_name: str, target_amount: float):
+    conn = get_db()
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO goals (name, target, saved) VALUES (?, ?, 0)",
+            (goal_name, target_amount)
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
-    goal = {
-        "name": goal_name,
-        "target": target_amount,
-        "saved": 0
+    return {
+        "message": "Goal created",
+        "goal": {"name": goal_name, "target": target_amount, "saved": 0}
     }
 
-    user_budget["goals"].append(goal)
-
-    return {"message": "Goal created", "goal": goal}
-
-
-# -------------------------------
-# Add Saving to Goal
-# -------------------------------
+# ─────────────────────────────────────────────────────────────
+# Add Saving
+# ─────────────────────────────────────────────────────────────
 @app.post("/add-saving")
 def add_saving(goal_name: str, amount: float):
+    conn = get_db()
+    row  = conn.execute("SELECT * FROM goals WHERE name=?", (goal_name,)).fetchone()
 
-    for goal in user_budget["goals"]:
+    if not row:
+        conn.close()
+        return {"error": "Goal not found"}
 
-        if goal["name"] == goal_name:
+    new_saved = row["saved"] + amount
+    conn.execute("UPDATE goals SET saved=? WHERE name=?", (new_saved, goal_name))
+    conn.commit()
+    conn.close()
 
-            goal["saved"] += amount
+    progress = (new_saved / row["target"]) * 100 if row["target"] > 0 else 0
 
-            progress = (goal["saved"] / goal["target"]) * 100
+    return {
+        "goal":             goal_name,
+        "saved":            new_saved,
+        "target":           row["target"],
+        "progress_percent": round(progress, 2),
+    }
 
-            return {
-                "goal": goal_name,
-                "saved": goal["saved"],
-                "progress_percent": round(progress, 2)
-            }
+# ─────────────────────────────────────────────────────────────
+# FIX #12: NEW — Get Goals (Flutter loads this on initState)
+# ─────────────────────────────────────────────────────────────
+@app.get("/get-goals")
+def get_goals():
+    conn  = get_db()
+    rows  = conn.execute("SELECT * FROM goals").fetchall()
+    conn.close()
 
-    return {"error": "Goal not found"}
+    goals = [{"name": r["name"], "target": r["target"], "saved": r["saved"]} for r in rows]
+    return {"goals": goals}
 
+# ─────────────────────────────────────────────────────────────
+# FIX #13/#14: NEW — JSON dashboard endpoint (replaces HTML parsing)
+# Flutter calls this instead of parsing /ui HTML
+# ─────────────────────────────────────────────────────────────
+@app.get("/dashboard")
+def dashboard():
+    income = get_config("income")
+    if income is None:
+        return {"error": "income_not_set"}
 
-# -------------------------------
-# UI Dashboard
-# -------------------------------
-@app.get("/ui", response_class=HTMLResponse)
-def ui():
+    spent      = get_spent()
+    cat_budget = get_category_budget()
+    meta       = get_meta()
+    needs      = get_config("needs", 0)
+    wants      = get_config("wants", 0)
 
-    if "income" not in user_budget:
-        return HTMLResponse("<h2>Please setup income in /docs first</h2>")
-
-    xp = user_budget["xp"]
-
-    total_spent = sum(user_budget["spent"].values())
-    spendable = user_budget["needs"] + user_budget["wants"]
-
-    necessities_spent = user_budget["spent"]["Food"]
-    discretionary_spent = user_budget["spent"]["Shopping"] + user_budget["spent"]["Travel"]
-
-    if total_spent == 0:
-        vital_score = 100
-    else:
-        vital_score = (necessities_spent / total_spent) * 100
-
-    vital_score = round(vital_score, 2)
-
-    if vital_score >= 70:
-        vitality_status = "Excellent Financial Health"
-        vitality_color = "green"
-    elif vital_score >= 50:
-        vitality_status = "Balanced Spending"
-        vitality_color = "orange"
-    else:
-        vitality_status = "High Discretionary Spending"
-        vitality_color = "red"
-
-    score = 100
-    category_html = ""
-    all_safe = True
-    overspending_warning = ""
-
-    for category in user_budget["spent"]:
-
-        spent = user_budget["spent"][category]
-        limit = user_budget["category_budget"][category]
-        risk = (spent / limit) * 100
-
-        if risk > 80:
-            score -= 20
-            color = "red"
-            label = "High Risk"
-            all_safe = False
-        elif risk > 50:
-            score -= 10
-            color = "orange"
-            label = "Medium Risk"
-            all_safe = False
-        else:
-            color = "green"
-            label = "Low Risk"
-
-        if risk > 70 and overspending_warning == "":
-            overspending_warning = f"Warning: Your {category} spending is increasing faster than your budget."
-
-        category_html += f"""
-        <div style='margin-bottom:15px;'>
-            <strong>{category}</strong> — ₹{spent} / ₹{limit}<br>
-            <span style='color:{color};'>{round(risk,1)}% ({label})</span>
-            <div style='background:#eee;height:8px;border-radius:5px;margin-top:5px;'>
-                <div style='width:{min(risk,100)}%;background:{color};height:8px;border-radius:5px;'></div>
-            </div>
-        </div>
-        """
-
-    score = max(score, 0)
-
-    today = datetime.now().day
-    days_passed = max(today, 1)
-
-    daily_spend_rate = total_spent / days_passed
+    total_spent      = sum(spent.values())
+    spendable        = needs + wants
     remaining_budget = spendable - total_spent
+
+    today            = datetime.now().day
+    days_passed      = max(today, 1)
+    remaining_days   = max(30 - today, 1)
+    daily_spend_rate = total_spent / days_passed
+    safe_daily_spend = remaining_budget / remaining_days
 
     if daily_spend_rate > 0:
         days_until_empty = remaining_budget / daily_spend_rate
-        predicted_day = int(today + days_until_empty)
+        predicted_day    = int(today + days_until_empty)
     else:
         predicted_day = 30
 
     if predicted_day < 30:
-        ai_prediction = f"⚠ At current spending speed, budget may run out around day {predicted_day}."
+        ai_prediction = f"⚠ At current speed, budget may run out around day {predicted_day}."
     else:
         ai_prediction = "✅ Your spending pace is safe for the full month."
 
-    goals_html = ""
+    # Category risk %
+    category_risk = {}
+    overspending_alert = ""
+    for cat in ["Food", "Shopping", "Travel"]:
+        s     = spent.get(cat, 0)
+        limit = cat_budget.get(cat, 1)
+        risk  = (s / limit) * 100 if limit > 0 else 0
+        category_risk[cat] = round(risk, 1)
+        if risk > 70 and not overspending_alert:
+            overspending_alert = f"⚠ {cat} spending is increasing faster than budget."
 
-    for goal in user_budget["goals"]:
+    return {
+        "income":            income,
+        "totalSpent":        total_spent,
+        "remainingBudget":   round(remaining_budget, 2),
+        "safeDailySpend":    round(safe_daily_spend, 2),
+        "aiPrediction":      ai_prediction,
+        "overspendingAlert": overspending_alert,
+        "categorySpent":     spent,
+        "categoryRisk":      category_risk,
+        "categoryBudget":    cat_budget,
+        "xp":                meta.get("xp", 0),
+        "streak":            meta.get("streak", 0),
+    }
 
-        progress = (goal["saved"] / goal["target"]) * 100
-        progress = min(progress,100)
+# ─────────────────────────────────────────────────────────────
+# Legacy /ui HTML endpoint (kept for compatibility)
+# ─────────────────────────────────────────────────────────────
+@app.get("/ui", response_class=HTMLResponse)
+def ui():
+    data = dashboard()
+    if "error" in data:
+        return HTMLResponse("<h2>Please setup income first</h2>")
 
+    spent      = data["categorySpent"]
+    cat_budget = data["categoryBudget"]
+    cat_risk   = data["categoryRisk"]
+
+    category_html = ""
+    for cat in ["Food", "Shopping", "Travel"]:
+        s     = spent.get(cat, 0)
+        limit = cat_budget.get(cat, 1)
+        risk  = cat_risk.get(cat, 0)
+        color = "red" if risk > 80 else "orange" if risk > 50 else "green"
+        label = "High Risk" if risk > 80 else "Medium Risk" if risk > 50 else "Low Risk"
+        category_html += f"""
+        <div style='margin-bottom:15px;'>
+            <strong>{cat}</strong> — ₹{s} / ₹{limit}<br>
+            <span style='color:{color};'>{risk}% ({label})</span>
+            <div style='background:#eee;height:8px;border-radius:5px;margin-top:5px;'>
+                <div style='width:{min(risk,100)}%;background:{color};height:8px;border-radius:5px;'></div>
+            </div>
+        </div>"""
+
+    conn       = get_db()
+    goals_rows = conn.execute("SELECT * FROM goals").fetchall()
+    conn.close()
+
+    monthly_save = get_config("monthly_savings", 0)
+    goals_html   = ""
+    for goal in goals_rows:
+        progress      = min((goal["saved"] / goal["target"]) * 100, 100) if goal["target"] > 0 else 0
         remaining_goal = goal["target"] - goal["saved"]
-        monthly_save = user_budget.get("monthly_savings",0)
-
-        if monthly_save > 0:
-            months_needed = round(remaining_goal / monthly_save,1)
-        else:
-            months_needed = "Unknown"
-
+        months_needed  = round(remaining_goal / monthly_save, 1) if monthly_save > 0 else "Unknown"
         goals_html += f"""
         <div style='margin-bottom:15px;'>
             <strong>{goal["name"]}</strong><br>
@@ -268,71 +331,24 @@ def ui():
             <div style='background:#eee;height:10px;border-radius:6px;margin-top:5px;'>
                 <div style='width:{progress}%;background:green;height:10px;border-radius:6px;'></div>
             </div>
-            <small>{round(progress,1)}% complete</small><br>
-            <small>Estimated completion: {months_needed} months</small>
-        </div>
-        """
+            <small>{round(progress,1)}% complete — {months_needed} months to go</small>
+        </div>"""
 
-    if xp < 30:
-        plant = "🌱"
-        stage = "Seed"
-        size = 70
-    elif xp < 70:
-        plant = "🌿"
-        stage = "Sprout"
-        size = 90
-    elif xp < 120:
-        plant = "🌳"
-        stage = "Young Tree"
-        size = 120
-    elif xp < 200:
-        plant = "🌲"
-        stage = "Strong Tree"
-        size = 150
-    else:
-        plant = "🌴"
-        stage = "Money Tree"
-        size = 180
+    xp    = data["xp"]
+    plant = "🌱" if xp < 30 else "🌿" if xp < 70 else "🌳" if xp < 120 else "🌲" if xp < 200 else "🌴"
+    stage = "Seed" if xp < 30 else "Sprout" if xp < 70 else "Young Tree" if xp < 120 else "Strong Tree" if xp < 200 else "Money Tree"
+    size  = 70 if xp < 30 else 90 if xp < 70 else 120 if xp < 120 else 150 if xp < 200 else 180
 
-    remaining_days = max(30 - today, 1)
-    safe_daily_spend = remaining_budget / remaining_days
-
-    growth_percent = min((xp / 200) * 100, 100)
-
-    html = f"""
-<html>
-<head>
-<title>Finzo Growth System</title>
-</head>
-<body>
-
+    html = f"""<html><head><title>Finzo</title></head><body>
 <h1>🌱 Finzo Financial Growth</h1>
-
-<div style="font-size:{size}px;">{plant}</div>
-<h2>{stage}</h2>
-
-<h3>Financial Vitality Score</h3>
-<h2 style="color:{vitality_color};">{vital_score}%</h2>
-
-<h3>AI Spending Prediction</h3>
-<p>{ai_prediction}</p>
-
-<h3>Overspending Alert</h3>
-<p>{overspending_warning if overspending_warning else "No risky spending detected."}</p>
-
-<h3>Savings Goals</h3>
-{goals_html if goals_html else "No goals created yet"}
-
+<div style="font-size:{size}px;">{plant}</div><h2>{stage}</h2>
+<h3>AI Spending Prediction</h3><p>{data["aiPrediction"]}</p>
+<h3>Overspending Alert</h3><p>{data["overspendingAlert"] or "No risky spending detected."}</p>
+<h3>Savings Goals</h3>{goals_html or "No goals created yet"}
 <h3>Budget Overview</h3>
-<p>Total Spent: ₹{total_spent}</p>
-<p>Remaining Budget: ₹{remaining_budget}</p>
-<p>Safe Daily Spend: ₹{round(safe_daily_spend,2)}</p>
-
-<h3>Expense Tracker</h3>
-{category_html}
-
-</body>
-</html>
-"""
-
+<p>Total Spent: ₹{data["totalSpent"]}</p>
+<p>Remaining Budget: ₹{data["remainingBudget"]}</p>
+<p>Safe Daily Spend: ₹{data["safeDailySpend"]}</p>
+<h3>Expense Tracker</h3>{category_html}
+</body></html>"""
     return HTMLResponse(content=html)

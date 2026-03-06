@@ -1,0 +1,47 @@
+{
+  "project_info": {
+    "project_number": "1079522356688",
+    "project_id": "finzo-f4932",
+    "storage_bucket": "finzo-f4932.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1079522356688:android:1f0091b621cf49eec81dd5",
+        "android_client_info": {
+          "package_name": "com.example.finzo"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "1079522356688-na3p6lp1m9sa0dt8u5ps9kes0s4kiav5.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.example.finzo",
+            "certificate_hash": "2b11ed13779a75efc7b394a2265ab56cf4319c3b"
+          }
+        },
+        {
+          "client_id": "1079522356688-ii2shp33211gce6bm079nfpejuapd04g.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyC3zaXEhxj_lR1rKpmAl6-pDMhPe3joPlU"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "1079522356688-ii2shp33211gce6bm079nfpejuapd04g.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

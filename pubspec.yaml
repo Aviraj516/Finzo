@@ -28,7 +28,7 @@ dependencies:
   google_sign_in: ^6.2.1
   cloud_firestore: ^5.4.4
 
-  # SMS & Permissions ✅
+  # SMS & Permissions
   flutter_sms_inbox: ^1.0.3
   permission_handler: ^11.3.0
 

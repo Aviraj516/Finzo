@@ -8,14 +8,77 @@ class GoalsScreen extends StatefulWidget {
   State<GoalsScreen> createState() => _GoalsScreenState();
 }
 
-class _GoalsScreenState extends State<GoalsScreen> {
-  // Local goals mirror (backend is source of truth on save)
+class _GoalsScreenState extends State<GoalsScreen>
+    with AutomaticKeepAliveClientMixin {
   List<Map<String, dynamic>> goals = [];
   bool isLoading = false;
 
-  // ── Create Goal ─────────────────────────────────────────
+  @override
+  void initState() {
+    super.initState();
+    _loadGoals();
+  }
+
+  @override
+  bool get wantKeepAlive => true;
+
+  // ── Safe number parser (handles String / int / double / null) ──
+  double _toDouble(dynamic v) {
+    if (v == null) return 0.0;
+    if (v is double) return v;
+    if (v is int) return v.toDouble();
+    if (v is String) return double.tryParse(v) ?? 0.0;
+    return 0.0;
+  }
+
+  // ── Load Goals ────────────────────────────────────────────
+  Future<void> _loadGoals() async {
+    if (!mounted) return;
+    setState(() => isLoading = true);
+
+    try {
+      final result = await ApiService.getGoals();
+
+      if (!mounted) return;
+
+      if (result['error'] != null) {
+        _snack('❌ ${result['error']}', Colors.red);
+        setState(() => isLoading = false);
+        return;
+      }
+
+      final rawGoals = result['goals'];
+
+      // Backend might return null or a non-list — guard it
+      if (rawGoals == null || rawGoals is! List) {
+        setState(() {
+          isLoading = false;
+          goals = [];
+        });
+        return;
+      }
+
+      setState(() {
+        isLoading = false;
+        goals = rawGoals.map<Map<String, dynamic>>((g) {
+          final map = g as Map<String, dynamic>;
+          return {
+            'name':   (map['name']   ?? '').toString(),
+            'target': _toDouble(map['target']),
+            'saved':  _toDouble(map['saved']),
+          };
+        }).toList();
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => isLoading = false);
+      _snack('❌ Failed to load goals: ${_friendlyError(e)}', Colors.red);
+    }
+  }
+
+  // ── Create Goal ───────────────────────────────────────────
   void _showCreateGoalDialog() {
-    final nameCtrl = TextEditingController();
+    final nameCtrl   = TextEditingController();
     final targetCtrl = TextEditingController();
 
     showDialog(
@@ -42,29 +105,48 @@ class _GoalsScreenState extends State<GoalsScreen> {
                   borderRadius: BorderRadius.circular(12)),
             ),
             onPressed: () async {
-              final name = nameCtrl.text.trim();
-              final target = double.tryParse(targetCtrl.text);
-              if (name.isEmpty || target == null) return;
-              Navigator.pop(context);
+              final name   = nameCtrl.text.trim();
+              final target = double.tryParse(targetCtrl.text.trim());
 
+              if (name.isEmpty) {
+                _snack('⚠️ Please enter a goal name', Colors.orange);
+                return;
+              }
+              if (target == null || target <= 0) {
+                _snack('⚠️ Please enter a valid target amount', Colors.orange);
+                return;
+              }
+
+              Navigator.pop(context);
               setState(() => isLoading = true);
 
-              // 🔗 BACKEND CALL: POST /create-goal
-              final result = await ApiService.createGoal(name, target);
+              try {
+                final result = await ApiService.createGoal(name, target);
 
-              setState(() {
-                isLoading = false;
-                if (result['error'] == null) {
-                  goals.add({'name': name, 'target': target, 'saved': 0.0});
+                if (!mounted) return;
+                setState(() => isLoading = false);
+
+                if (result['error'] != null) {
+                  _snack('❌ ${result['error']}', Colors.red);
+                  return;
                 }
-              });
 
-              _snack(
-                result['error'] != null
-                    ? '❌ ${result['error']}'
-                    : '🎯 Goal "$name" created!',
-                result['error'] != null ? Colors.red : const Color(0xFF4CAF50),
-              );
+                // Use backend-returned values if present, otherwise use local
+                setState(() {
+                  goals.add({
+                    'name':   (result['name']   ?? name).toString(),
+                    'target': _toDouble(result['target'] ?? target),
+                    'saved':  _toDouble(result['saved']  ?? 0),
+                  });
+                });
+
+                _snack('🎯 Goal "$name" created!', const Color(0xFF4CAF50));
+              } catch (e) {
+                if (!mounted) return;
+                setState(() => isLoading = false);
+                _snack('❌ Could not create goal: ${_friendlyError(e)}',
+                    Colors.red);
+              }
             },
             child: const Text('Create', style: TextStyle(color: Colors.white)),
           ),
@@ -73,18 +155,17 @@ class _GoalsScreenState extends State<GoalsScreen> {
     );
   }
 
-  // ── Add Saving to Goal ──────────────────────────────────
+  // ── Add Saving ────────────────────────────────────────────
   void _showAddSavingDialog(int index) {
     final amountCtrl = TextEditingController();
-    final goal = goals[index];
+    final goal       = goals[index];
 
     showDialog(
       context: context,
       builder: (_) => AlertDialog(
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
         title: Text('💚 Add to "${goal['name']}"'),
-        content:
-            _inputField(amountCtrl, 'Amount to Save', 'e.g. 5000', '₹ '),
+        content: _inputField(amountCtrl, 'Amount to Save', 'e.g. 5000', '₹ '),
         actions: [
           TextButton(
               onPressed: () => Navigator.pop(context),
@@ -96,30 +177,50 @@ class _GoalsScreenState extends State<GoalsScreen> {
                   borderRadius: BorderRadius.circular(12)),
             ),
             onPressed: () async {
-              final amt = double.tryParse(amountCtrl.text);
-              if (amt == null) return;
-              Navigator.pop(context);
+              final amt = double.tryParse(amountCtrl.text.trim());
 
+              if (amt == null || amt <= 0) {
+                _snack('⚠️ Please enter a valid amount', Colors.orange);
+                return;
+              }
+
+              Navigator.pop(context);
               setState(() => isLoading = true);
 
-              // 🔗 BACKEND CALL: POST /add-saving
-              final result =
-                  await ApiService.addSaving(goal['name'] as String, amt);
+              try {
+                final result = await ApiService.addSaving(
+                    goal['name'] as String, amt);
 
-              setState(() {
-                isLoading = false;
-                if (result['error'] == null) {
-                  goals[index]['saved'] =
-                      (goals[index]['saved'] as double) + amt;
+                if (!mounted) return;
+                setState(() => isLoading = false);
+
+                if (result['error'] != null) {
+                  _snack('❌ ${result['error']}', Colors.red);
+                  return;
                 }
-              });
 
-              _snack(
-                result['error'] != null
-                    ? '❌ ${result['error']}'
-                    : '✅ ₹$amt saved! Progress: ${result['progress_percent']}%',
-                result['error'] != null ? Colors.red : const Color(0xFF4CAF50),
-              );
+                // Update saved amount — use backend value if returned,
+                // otherwise add locally to avoid a reload round-trip.
+                setState(() {
+                  final newSaved = result.containsKey('saved')
+                      ? _toDouble(result['saved'])
+                      : _toDouble(goals[index]['saved']) + amt;
+                  goals[index] = {
+                    ...goals[index],
+                    'saved': newSaved,
+                  };
+                });
+
+                final pct = result['progress_percent']?.toString() ?? '';
+                _snack(
+                  '✅ ₹$amt saved!${pct.isNotEmpty ? ' Progress: $pct%' : ''}',
+                  const Color(0xFF4CAF50),
+                );
+              } catch (e) {
+                if (!mounted) return;
+                setState(() => isLoading = false);
+                _snack('❌ Could not save: ${_friendlyError(e)}', Colors.red);
+              }
             },
             child: const Text('Save', style: TextStyle(color: Colors.white)),
           ),
@@ -128,7 +229,32 @@ class _GoalsScreenState extends State<GoalsScreen> {
     );
   }
 
+  // ── Friendly error messages ───────────────────────────────
+  String _friendlyError(Object e) {
+    final msg = e.toString().toLowerCase();
+    if (msg.contains('socketexception') || msg.contains('network')) {
+      return 'No internet connection';
+    }
+    if (msg.contains('timeout') || msg.contains('timeoutexception')) {
+      return 'Request timed out — check your server';
+    }
+    if (msg.contains('handshake') || msg.contains('certificate')) {
+      return 'SSL/TLS error — check server certificate';
+    }
+    if (msg.contains('formatexception') || msg.contains('json')) {
+      return 'Server returned unexpected data';
+    }
+    if (msg.contains('type') && msg.contains('is not a subtype')) {
+      return 'Data format mismatch — check API response';
+    }
+    // Return first 80 chars so the snackbar doesn't overflow
+    return e.toString().length > 80
+        ? '${e.toString().substring(0, 80)}…'
+        : e.toString();
+  }
+
   void _snack(String msg, Color color) {
+    if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
       content: Text(msg),
       backgroundColor: color,
@@ -137,9 +263,11 @@ class _GoalsScreenState extends State<GoalsScreen> {
     ));
   }
 
-  // ── UI ─────────────────────────────────────────────────
+  // ── UI ────────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
+    super.build(context);
+
     return Scaffold(
       backgroundColor: const Color(0xFFF0EFE9),
       appBar: AppBar(
@@ -150,50 +278,66 @@ class _GoalsScreenState extends State<GoalsScreen> {
                 fontWeight: FontWeight.bold,
                 fontSize: 20,
                 color: Colors.black)),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh_rounded, color: Colors.black54),
+            onPressed: _loadGoals,
+          ),
+        ],
       ),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: _showCreateGoalDialog,
         backgroundColor: const Color(0xFF4CAF50),
         icon: const Icon(Icons.add, color: Colors.white),
-        label:
-            const Text('New Goal', style: TextStyle(color: Colors.white)),
+        label: const Text('New Goal', style: TextStyle(color: Colors.white)),
       ),
       body: isLoading
           ? const Center(
               child: CircularProgressIndicator(color: Color(0xFF4CAF50)))
-          : goals.isEmpty
-              ? Center(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      const Text('🎯', style: TextStyle(fontSize: 60)),
-                      const SizedBox(height: 16),
-                      Text('No goals yet!',
-                          style: TextStyle(
-                              fontSize: 18,
-                              fontWeight: FontWeight.bold,
-                              color: Colors.grey[600])),
-                      const SizedBox(height: 8),
-                      Text('Tap + to create your first savings goal',
-                          style: TextStyle(color: Colors.grey[400])),
-                    ],
-                  ),
-                )
-              : ListView.builder(
-                  padding: const EdgeInsets.all(20),
-                  itemCount: goals.length,
-                  itemBuilder: (_, i) => _goalCard(i),
-                ),
+          : RefreshIndicator(
+              color: const Color(0xFF4CAF50),
+              onRefresh: _loadGoals,
+              child: goals.isEmpty
+                  ? ListView(
+                      children: [
+                        SizedBox(
+                          height: MediaQuery.of(context).size.height * 0.6,
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              const Text('🎯',
+                                  style: TextStyle(fontSize: 60)),
+                              const SizedBox(height: 16),
+                              Text('No goals yet!',
+                                  style: TextStyle(
+                                      fontSize: 18,
+                                      fontWeight: FontWeight.bold,
+                                      color: Colors.grey[600])),
+                              const SizedBox(height: 8),
+                              Text('Tap + to create your first savings goal',
+                                  style: TextStyle(color: Colors.grey[400])),
+                            ],
+                          ),
+                        ),
+                      ],
+                    )
+                  : ListView.builder(
+                      padding: const EdgeInsets.all(20),
+                      itemCount: goals.length,
+                      itemBuilder: (_, i) => _goalCard(i),
+                    ),
+            ),
     );
   }
 
   Widget _goalCard(int index) {
-    final goal = goals[index];
-    final saved = (goal['saved'] as double);
-    final target = (goal['target'] as double);
-    final progress = (saved / target).clamp(0.0, 1.0);
-    final pct = (progress * 100).toStringAsFixed(1);
-    final remaining = target - saved;
+    final goal          = goals[index];
+    final double saved  = _toDouble(goal['saved']);
+    final double target = _toDouble(goal['target']);
+    final double progress =
+        target > 0 ? (saved / target).clamp(0.0, 1.0) : 0.0;
+    final pct       = (progress * 100).toStringAsFixed(1);
+    final remaining = (target - saved).clamp(0.0, double.infinity);
 
     Color progressColor;
     if (progress < 0.4) {
@@ -222,18 +366,25 @@ class _GoalsScreenState extends State<GoalsScreen> {
         children: [
           Row(
             children: [
-              Text(goal['name'] as String,
+              Expanded(
+                child: Text(
+                  (goal['name'] ?? '').toString(),
                   style: const TextStyle(
-                      fontWeight: FontWeight.bold, fontSize: 16)),
-              const Spacer(),
+                      fontWeight: FontWeight.bold, fontSize: 16),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              const SizedBox(width: 8),
               Text('$pct%',
                   style: TextStyle(
                       color: progressColor, fontWeight: FontWeight.bold)),
             ],
           ),
           const SizedBox(height: 4),
-          Text('₹${saved.toStringAsFixed(0)} / ₹${target.toStringAsFixed(0)}',
-              style: TextStyle(color: Colors.grey[500], fontSize: 13)),
+          Text(
+            '₹${saved.toStringAsFixed(0)} / ₹${target.toStringAsFixed(0)}',
+            style: TextStyle(color: Colors.grey[500], fontSize: 13),
+          ),
           const SizedBox(height: 10),
           ClipRRect(
             borderRadius: BorderRadius.circular(8),

@@ -8,23 +8,60 @@ class StreakScreen extends StatefulWidget {
   State<StreakScreen> createState() => _StreakScreenState();
 }
 
-class _StreakScreenState extends State<StreakScreen> {
-  int streak = 0;
-  int xp = 0;
+class _StreakScreenState extends State<StreakScreen>
+    with AutomaticKeepAliveClientMixin {
+  int streak  = 0;
+  int xp      = 0;
   bool isLoading = false;
 
-  // Days of the week tracker (mirrors the screenshot)
-  final List<Map<String, dynamic>> weekDays = [
-    {'day': 'Monday', 'logged': false},
-    {'day': 'Tuesday', 'logged': false},
-    {'day': 'Wednesday', 'logged': false},
-    {'day': 'Thursday', 'logged': false, 'today': true},
-    {'day': 'Friday', 'logged': false},
-    {'day': 'Saturday', 'logged': false},
-    {'day': 'Sunday', 'logged': false},
-  ];
+  // FIX #9: today is computed from actual current day, not hardcoded
+  late List<Map<String, dynamic>> weekDays;
 
-  // ── Log Today's Expense (waters the plant) ──────────────
+  @override
+  void initState() {
+    super.initState();
+    _buildWeekDays(); // build with real today
+    _loadXp();        // FIX #10: fetch xp from backend
+  }
+
+  @override
+  bool get wantKeepAlive => true;
+
+  // FIX #9: builds weekDays with correct today
+  void _buildWeekDays() {
+    const days = [
+      'Monday', 'Tuesday', 'Wednesday', 'Thursday',
+      'Friday', 'Saturday', 'Sunday'
+    ];
+    // DateTime.weekday: 1=Monday … 7=Sunday
+    final todayIndex = DateTime.now().weekday - 1;
+
+    weekDays = List.generate(7, (i) => {
+      'day':    days[i],
+      'logged': false,
+      'today':  i == todayIndex,
+    });
+  }
+
+  // FIX #10: load xp + streak from backend
+  Future<void> _loadXp() async {
+    if (!mounted) return;
+    final data = await ApiService.getDashboardData();
+    if (!mounted) return;
+    if (data['error'] == null) {
+      setState(() {
+        xp     = ((data['xp']     ?? 0) as num).toInt();
+        streak = ((data['streak'] ?? 0) as num).toInt();
+        // Mark today as logged if streak > 0
+        if (streak > 0) {
+          final todayIdx = weekDays.indexWhere((d) => d['today'] == true);
+          if (todayIdx >= 0) weekDays[todayIdx]['logged'] = true;
+        }
+      });
+    }
+  }
+
+  // ── Log Today ─────────────────────────────────────────────
   void _logToday() {
     final amountCtrl = TextEditingController();
     String selectedCategory = 'Food';
@@ -52,10 +89,11 @@ class _StreakScreenState extends State<StreakScreen> {
                     borderSide: BorderSide.none,
                   ),
                 ),
-                items: ['Food', 'Shopping', 'Travel'].map((c) {
-                  return DropdownMenuItem(value: c, child: Text(c));
-                }).toList(),
-                onChanged: (v) => setD(() => selectedCategory = v ?? 'Food'),
+                items: ['Food', 'Shopping', 'Travel']
+                    .map((c) => DropdownMenuItem(value: c, child: Text(c)))
+                    .toList(),
+                onChanged: (v) =>
+                    setD(() => selectedCategory = v ?? 'Food'),
               ),
               const SizedBox(height: 12),
               TextField(
@@ -90,24 +128,20 @@ class _StreakScreenState extends State<StreakScreen> {
                 Navigator.pop(context);
                 setState(() => isLoading = true);
 
-                // 🔗 BACKEND CALL: POST /add-expense
                 final result =
                     await ApiService.addExpense(selectedCategory, amt);
 
                 setState(() {
                   isLoading = false;
                   if (result['error'] == null) {
-                    xp = result['xp'] ?? xp;
+                    xp     = ((result['xp']     ?? xp) as num).toInt();
+                    streak = ((result['streak'] ?? streak) as num).toInt();
                     // Mark today as logged
                     final todayIdx =
                         weekDays.indexWhere((d) => d['today'] == true);
                     if (todayIdx >= 0) {
                       weekDays[todayIdx]['logged'] = true;
                     }
-                    // Update streak count
-                    streak = weekDays
-                        .where((d) => d['logged'] == true)
-                        .length;
                   }
                 });
 
@@ -140,6 +174,8 @@ class _StreakScreenState extends State<StreakScreen> {
 
   @override
   Widget build(BuildContext context) {
+    super.build(context);
+
     return Scaffold(
       backgroundColor: const Color(0xFFF0EFE9),
       appBar: AppBar(
@@ -165,19 +201,19 @@ class _StreakScreenState extends State<StreakScreen> {
               padding: const EdgeInsets.symmetric(horizontal: 20),
               child: Column(
                 children: [
-                  // ── Quick Actions Row ────────────────────────
+                  // ── Quick Actions Row ──────────────────────
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
                       _actionChip('💰', 'Receive', const Color(0xFFE8F5E9)),
-                      _actionChip('💸', 'Pay', const Color(0xFFEDE7F6)),
-                      _actionChip('📈', 'Invest', const Color(0xFFFFF8E1)),
-                      _actionChip('🎯', 'Goals', const Color(0xFFFCE4EC)),
+                      _actionChip('💸', 'Pay',     const Color(0xFFEDE7F6)),
+                      _actionChip('📈', 'Invest',  const Color(0xFFFFF8E1)),
+                      _actionChip('🎯', 'Goals',   const Color(0xFFFCE4EC)),
                     ],
                   ),
                   const SizedBox(height: 20),
 
-                  // ── Water Plant Challenge ────────────────────
+                  // ── Water Plant Challenge ──────────────────
                   Container(
                     decoration: BoxDecoration(
                       color: Colors.white,
@@ -189,8 +225,7 @@ class _StreakScreenState extends State<StreakScreen> {
                     child: Row(
                       children: [
                         Container(
-                          width: 48,
-                          height: 48,
+                          width: 48, height: 48,
                           decoration: BoxDecoration(
                             color: const Color(0xFFE8F5E9),
                             borderRadius: BorderRadius.circular(12),
@@ -204,13 +239,13 @@ class _StreakScreenState extends State<StreakScreen> {
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              const Text('Water your plant!',
+                              const Text('Daily Challenge',
                                   style: TextStyle(
                                       fontWeight: FontWeight.bold,
                                       fontSize: 15)),
-                              const Text('Skip Swiggy today · Save ₹200',
+                              Text('Log today\'s expense to water your plant!',
                                   style: TextStyle(
-                                      color: Colors.grey, fontSize: 12)),
+                                      color: Colors.grey[500], fontSize: 12)),
                             ],
                           ),
                         ),
@@ -223,7 +258,7 @@ class _StreakScreenState extends State<StreakScreen> {
                               color: const Color(0xFF4CAF50),
                               borderRadius: BorderRadius.circular(20),
                             ),
-                            child: const Text('⚡ +XP',
+                            child: const Text('Log',
                                 style: TextStyle(
                                     color: Colors.white,
                                     fontWeight: FontWeight.bold)),
@@ -234,7 +269,7 @@ class _StreakScreenState extends State<StreakScreen> {
                   ),
                   const SizedBox(height: 16),
 
-                  // ── Streak Banner ────────────────────────────
+                  // ── Streak Banner ──────────────────────────
                   GestureDetector(
                     onTap: _logToday,
                     child: Container(
@@ -246,8 +281,7 @@ class _StreakScreenState extends State<StreakScreen> {
                       child: Row(
                         children: [
                           Container(
-                            width: 48,
-                            height: 48,
+                            width: 48, height: 48,
                             decoration: BoxDecoration(
                               color: Colors.white.withOpacity(0.15),
                               borderRadius: BorderRadius.circular(12),
@@ -266,8 +300,7 @@ class _StreakScreenState extends State<StreakScreen> {
                                         color: Colors.white,
                                         fontWeight: FontWeight.bold,
                                         fontSize: 15)),
-                                const Text(
-                                    'Keep it up — 8 days to top 10%!',
+                                const Text('Keep it up — 8 days to top 10%!',
                                     style: TextStyle(
                                         color: Colors.white70,
                                         fontSize: 12)),
@@ -281,7 +314,7 @@ class _StreakScreenState extends State<StreakScreen> {
                               color: const Color(0xFF4CAF50),
                               borderRadius: BorderRadius.circular(20),
                             ),
-                            child: Text('⚡ +${xp > 0 ? xp : 20} XP',
+                            child: Text('⚡ $xp XP',
                                 style: const TextStyle(
                                     color: Colors.white,
                                     fontWeight: FontWeight.bold)),
@@ -292,7 +325,7 @@ class _StreakScreenState extends State<StreakScreen> {
                   ),
                   const SizedBox(height: 20),
 
-                  // ── Weekly Streak Calendar ───────────────────
+                  // ── Weekly Streak Calendar ─────────────────
                   Container(
                     decoration: BoxDecoration(
                       color: const Color(0xFF1A1A2E),
@@ -304,8 +337,7 @@ class _StreakScreenState extends State<StreakScreen> {
                       children: [
                         Row(
                           children: [
-                            const Text('🔥',
-                                style: TextStyle(fontSize: 22)),
+                            const Text('🔥', style: TextStyle(fontSize: 22)),
                             const SizedBox(width: 8),
                             Text('$streak-Day Streak!',
                                 style: const TextStyle(
@@ -327,7 +359,7 @@ class _StreakScreenState extends State<StreakScreen> {
   }
 
   Widget _dayRow(Map<String, dynamic> day) {
-    final isToday = day['today'] == true;
+    final isToday  = day['today']  == true;
     final isLogged = day['logged'] == true;
 
     return Container(
@@ -357,7 +389,7 @@ class _StreakScreenState extends State<StreakScreen> {
                       ? 'Logged ✅'
                       : isToday
                           ? 'Today — Log now!'
-                          : 'Missed',
+                          : 'Not logged',
                   style: TextStyle(
                     fontSize: 12,
                     color: isLogged
@@ -374,8 +406,7 @@ class _StreakScreenState extends State<StreakScreen> {
               ? GestureDetector(
                   onTap: _logToday,
                   child: Container(
-                    width: 34,
-                    height: 34,
+                    width: 34, height: 34,
                     decoration: BoxDecoration(
                       color: const Color(0xFFFF9800).withOpacity(0.2),
                       shape: BoxShape.circle,
@@ -383,13 +414,12 @@ class _StreakScreenState extends State<StreakScreen> {
                           color: const Color(0xFFFF9800), width: 1.5),
                     ),
                     child: const Center(
-                        child:
-                            Text('🔥', style: TextStyle(fontSize: 16))),
+                        child: Text('🔥',
+                            style: TextStyle(fontSize: 16))),
                   ),
                 )
               : Container(
-                  width: 34,
-                  height: 34,
+                  width: 34, height: 34,
                   decoration: BoxDecoration(
                     color: isLogged
                         ? const Color(0xFF4CAF50).withOpacity(0.2)
@@ -405,7 +435,9 @@ class _StreakScreenState extends State<StreakScreen> {
                       child: Icon(
                     isLogged ? Icons.check : Icons.close,
                     size: 16,
-                    color: isLogged ? const Color(0xFF4CAF50) : Colors.grey,
+                    color: isLogged
+                        ? const Color(0xFF4CAF50)
+                        : Colors.grey,
                   )),
                 ),
         ],
@@ -417,12 +449,11 @@ class _StreakScreenState extends State<StreakScreen> {
     return Column(
       children: [
         Container(
-          width: 68,
-          height: 68,
+          width: 68, height: 68,
           decoration: BoxDecoration(
               color: bg, borderRadius: BorderRadius.circular(18)),
-          child:
-              Center(child: Text(emoji, style: const TextStyle(fontSize: 28))),
+          child: Center(
+              child: Text(emoji, style: const TextStyle(fontSize: 28))),
         ),
         const SizedBox(height: 6),
         Text(label,

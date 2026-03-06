@@ -2,7 +2,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 class ApiService {
-  // 🔁 Change this to your FastAPI server IP
+  // 🔁 Your FastAPI server IP — keep this running on your Mac
   static const String baseUrl = 'http://192.168.31.119:8000';
 
   static Map<String, String> get _headers => {
@@ -11,15 +11,13 @@ class ApiService {
       };
 
   // ─────────────────────────────────────────
-  // SETUP INCOME  →  POST /setup-income
+  // SETUP INCOME
   // ─────────────────────────────────────────
   static Future<Map<String, dynamic>> setupIncome(double income) async {
     try {
       final res = await http
-          .post(
-            Uri.parse('$baseUrl/setup-income?income=$income'),
-            headers: _headers,
-          )
+          .post(Uri.parse('$baseUrl/setup-income?income=$income'),
+              headers: _headers)
           .timeout(const Duration(seconds: 10));
       return jsonDecode(res.body);
     } catch (e) {
@@ -28,17 +26,16 @@ class ApiService {
   }
 
   // ─────────────────────────────────────────
-  // ADD EXPENSE  →  POST /add-expense
-  // Returns: { risk, xp }
+  // ADD EXPENSE
   // ─────────────────────────────────────────
   static Future<Map<String, dynamic>> addExpense(
       String category, double amount) async {
     try {
       final res = await http
           .post(
-            Uri.parse('$baseUrl/add-expense?category=$category&amount=$amount'),
-            headers: _headers,
-          )
+              Uri.parse(
+                  '$baseUrl/add-expense?category=$category&amount=$amount'),
+              headers: _headers)
           .timeout(const Duration(seconds: 10));
       return jsonDecode(res.body);
     } catch (e) {
@@ -47,7 +44,7 @@ class ApiService {
   }
 
   // ─────────────────────────────────────────
-  // SMS EXPENSE DETECTION  →  POST /sms-expense
+  // SMS EXPENSE DETECTION
   // ─────────────────────────────────────────
   static Future<Map<String, dynamic>> smsExpense(
       double amount, String merchant) async {
@@ -56,10 +53,7 @@ class ApiService {
           .post(
             Uri.parse('$baseUrl/sms-expense'),
             headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-            body: {
-              'amount': amount.toString(),
-              'merchant': merchant,
-            },
+            body: {'amount': amount.toString(), 'merchant': merchant},
           )
           .timeout(const Duration(seconds: 10));
       return jsonDecode(res.body);
@@ -69,16 +63,16 @@ class ApiService {
   }
 
   // ─────────────────────────────────────────
-  // CREATE GOAL  →  POST /create-goal
+  // CREATE GOAL
   // ─────────────────────────────────────────
   static Future<Map<String, dynamic>> createGoal(
       String name, double target) async {
     try {
       final res = await http
           .post(
-            Uri.parse('$baseUrl/create-goal?goal_name=$name&target_amount=$target'),
-            headers: _headers,
-          )
+              Uri.parse(
+                  '$baseUrl/create-goal?goal_name=${Uri.encodeComponent(name)}&target_amount=$target'),
+              headers: _headers)
           .timeout(const Duration(seconds: 10));
       return jsonDecode(res.body);
     } catch (e) {
@@ -87,16 +81,16 @@ class ApiService {
   }
 
   // ─────────────────────────────────────────
-  // ADD SAVING  →  POST /add-saving
+  // ADD SAVING
   // ─────────────────────────────────────────
   static Future<Map<String, dynamic>> addSaving(
       String goalName, double amount) async {
     try {
       final res = await http
           .post(
-            Uri.parse('$baseUrl/add-saving?goal_name=$goalName&amount=$amount'),
-            headers: _headers,
-          )
+              Uri.parse(
+                  '$baseUrl/add-saving?goal_name=${Uri.encodeComponent(goalName)}&amount=$amount'),
+              headers: _headers)
           .timeout(const Duration(seconds: 10));
       return jsonDecode(res.body);
     } catch (e) {
@@ -105,76 +99,59 @@ class ApiService {
   }
 
   // ─────────────────────────────────────────
-  // GET DASHBOARD DATA  →  GET /ui (parsed)
-  // Returns all fields Flutter needs
+  // FIX #12: GET GOALS — loads all goals from backend
   // ─────────────────────────────────────────
-  static Future<Map<String, dynamic>> getDashboardData() async {
+  static Future<Map<String, dynamic>> getGoals() async {
     try {
       final res = await http
-          .get(Uri.parse('$baseUrl/ui'), headers: _headers)
+          .get(Uri.parse('$baseUrl/get-goals'), headers: _headers)
           .timeout(const Duration(seconds: 10));
-
-      if (res.statusCode != 200) return {'error': 'Server error ${res.statusCode}'};
-      return _parseHtmlData(res.body);
+      return jsonDecode(res.body);
     } catch (e) {
       return {'error': e.toString()};
     }
   }
 
-  /// Parses the FastAPI /ui HTML into a full Flutter-friendly map
-  static Map<String, dynamic> _parseHtmlData(String html) {
-    // Income not set yet
-    if (html.contains('setup income') || html.contains('Setup income')) {
-      return {'error': 'income_not_set'};
-    }
+  // ─────────────────────────────────────────
+  // FIX #13/#14: GET DASHBOARD — pure JSON, no HTML parsing
+  // ─────────────────────────────────────────
+  static Future<Map<String, dynamic>> getDashboardData() async {
+    try {
+      final res = await http
+          .get(Uri.parse('$baseUrl/dashboard'), headers: _headers)
+          .timeout(const Duration(seconds: 10));
 
-    // ── Helper: extract number after label ──
-    double extractNum(String label) {
-      final pattern = RegExp('$label[^₹]*₹([\\d.]+)', dotAll: true);
-      final match = pattern.firstMatch(html);
-      return double.tryParse(match?.group(1) ?? '0') ?? 0;
-    }
-
-    // ── Core values ──
-    final totalSpent = extractNum('Total Spent');
-    final remainingBudget = extractNum('Remaining Budget');
-    final safeDailySpend = extractNum('Safe Daily Spend');
-
-    // ── AI Prediction ──
-    String aiPrediction = '—';
-    final predMatch = RegExp(
-            r'<h3>AI Spending Prediction<\/h3>\s*<p>([^<]+)<\/p>')
-        .firstMatch(html);
-    if (predMatch != null) {
-      aiPrediction = predMatch.group(1)?.trim() ?? '—';
-    }
-
-    // ── Category spent amounts ──
-    Map<String, double> categorySpent = {};
-    Map<String, double> categoryRisk = {};
-
-    for (final cat in ['Food', 'Shopping', 'Travel']) {
-      // Matches: <strong>Food</strong> — ₹200 / ₹...
-      final catMatch = RegExp(
-              '<strong>$cat<\\/strong> — ₹([\\d.]+) \\/ ₹[\\d.]+<br>\\s*'
-              "<span style='color:\\w+;'>([\\d.]+)%")
-          .firstMatch(html);
-      if (catMatch != null) {
-        categorySpent[cat] = double.tryParse(catMatch.group(1) ?? '0') ?? 0;
-        categoryRisk[cat] = double.tryParse(catMatch.group(2) ?? '0') ?? 0;
-      } else {
-        categorySpent[cat] = 0;
-        categoryRisk[cat] = 0;
+      if (res.statusCode != 200) {
+        return {'error': 'Server error ${res.statusCode}'};
       }
-    }
 
-    return {
-      'totalSpent': totalSpent,
-      'remainingBudget': remainingBudget,
-      'safeDailySpend': safeDailySpend,
-      'aiPrediction': aiPrediction,
-      'categorySpent': categorySpent,
-      'categoryRisk': categoryRisk,
-    };
+      final data = jsonDecode(res.body);
+
+      // Normalize types so Flutter doesn't crash on int vs double
+      if (data['error'] != null) return data;
+
+      return {
+        'error':             null,
+        'income':            (data['income']          ?? 0).toDouble(),
+        'totalSpent':        (data['totalSpent']       ?? 0).toDouble(),
+        'remainingBudget':   (data['remainingBudget']  ?? 0).toDouble(),
+        'safeDailySpend':    (data['safeDailySpend']   ?? 0).toDouble(),
+        'aiPrediction':       data['aiPrediction']     ?? '',
+        'overspendingAlert':  data['overspendingAlert'] ?? '',
+        'xp':                (data['xp']               ?? 0).toInt(),
+        'streak':            (data['streak']            ?? 0).toInt(),
+        'categorySpent': _toDoubleMap(data['categorySpent']),
+        'categoryRisk':  _toDoubleMap(data['categoryRisk']),
+        'categoryBudget': _toDoubleMap(data['categoryBudget']),
+      };
+    } catch (e) {
+      return {'error': e.toString()};
+    }
+  }
+
+  static Map<String, double> _toDoubleMap(dynamic raw) {
+    if (raw == null) return {};
+    final map = raw as Map<String, dynamic>;
+    return map.map((k, v) => MapEntry(k, (v ?? 0).toDouble()));
   }
 }
