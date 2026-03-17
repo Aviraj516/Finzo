@@ -13,7 +13,7 @@ void main() async {
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
   runApp(const FinzoApp());
 }
-//finzo app
+// Added by Mahi
 class FinzoApp extends StatelessWidget {
   const FinzoApp({super.key});
 
