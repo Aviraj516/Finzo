@@ -141,6 +141,7 @@ class _HomeScreenState extends State<HomeScreen>
   }
 
   // ── Load dashboard data ───────────────────────────────
+  // ── Load dashboard data ─────────────────────────────
   Future<void> _loadDashboard() async {
     try {
       final data = await ApiService.getDashboardData();
@@ -155,12 +156,10 @@ class _HomeScreenState extends State<HomeScreen>
           _plantAnim..reset()..forward();
         });
       }
-      // ── Silently ignore errors (timeout/network) ──────
-      // The snackbar was appearing on other tabs because HomeScreen
-      // loads in background via IndexedStack. We don't show errors
-      // here — user can tap the refresh button on the balance card.
+      // Timeout/network errors silently ignored on background load.
+      // User can tap the refresh button on the balance card to retry.
     } catch (_) {
-      // Silent — no snackbar on background dashboard load
+      // Silent — no snackbar for background dashboard load
     }
   }
 

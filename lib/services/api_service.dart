@@ -3,9 +3,7 @@ import 'package:http/http.dart' as http;
 
 class ApiService {
   // 🔁 Your FastAPI server IP — keep this running on your Mac
-  static const String baseUrl = 'http://192.168.31.119:8000';
-
-  static Map<String, String> get _headers => {
+static const String baseUrl = "http://172.22.204.246:8000";  static Map<String, String> get _headers => {
         'Content-Type': 'application/json',
         'Accept': 'application/json',
       };

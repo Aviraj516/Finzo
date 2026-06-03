@@ -35,17 +35,19 @@ class SmsService {
     void Function(String merchant, double amount)? onTransaction,
   }) async {
     try {
-      // Get all inbox messages
+      // Fetch last 100 SMS so we have enough to find 10 payment messages
       final List<SmsMessage> messages = await _query.querySms(
         kinds: [SmsQueryKind.inbox],
-        count: 50, // fetch last 50 SMS
+        count: 100,
       );
 
       debugPrint('SmsService: 📬 Found ${messages.length} inbox messages');
 
       int found = 0;
       for (final msg in messages) {
-        if (found >= 20) break;
+        // Stop once we have exactly 10 payment transactions
+        if (found >= 10) break;
+
         final body = msg.body ?? '';
         debugPrint('SmsService: checking → $body');
 
@@ -55,7 +57,7 @@ class SmsService {
             final amount   = double.tryParse(data['amount']!) ?? 0;
             final merchant = data['merchant']!;
             if (amount > 0) {
-              debugPrint('SmsService: ✅ Transaction → $merchant ₹$amount');
+              debugPrint('SmsService: ✅ Transaction $found/10 → $merchant ₹$amount');
               onTransaction?.call(merchant, amount);
               await sendToBackend(data['amount']!, merchant);
               found++;
@@ -64,27 +66,76 @@ class SmsService {
         }
       }
 
-      debugPrint('SmsService: ✅ Parsed $found transactions from inbox');
+      debugPrint('SmsService: ✅ Parsed $found payment transactions from inbox');
     } catch (e) {
       debugPrint('SmsService._readInboxSms error: $e');
     }
   }
 
-  // ── Detect if SMS looks like a bank transaction ──────────
+  // ── Strict payment SMS detector — ALL rules must pass ───
+  //
+  // Rule 1 — Must have a money amount pattern
+  //   ₹500 | Rs.1,200 | INR 450 | Rs 99.00
+  //
+  // Rule 2 — Must have a debit/payment action keyword
+  //   debited | paid | sent | withdrawn | purchase | spent
+  //   (NOT just "payment" or "credited" alone — too noisy)
+  //
+  // Rule 3 — Must come from a known bank/payment sender
+  //   OR contain a UPI reference / transaction ID pattern
+  //
+  // Rule 4 — Must NOT be an OTP / promo / alert-only SMS
+  //   (hard-reject if it contains OTP/promo signals)
+  //
   bool _isTransaction(String sms) {
     final lower = sms.toLowerCase();
-    return lower.contains('rs')          ||
-           lower.contains('inr')         ||
-           lower.contains('₹')           ||
-           lower.contains('debited')     ||
-           lower.contains('credited')    ||
-           lower.contains('sent')        ||
-           lower.contains('paid')        ||
-           lower.contains('payment')     ||
-           lower.contains('upi')         ||
-           lower.contains('transaction') ||
-           lower.contains('withdrawn')   ||
-           lower.contains('purchase');
+
+    // ── Rule 4 first: hard-reject non-payment SMS ─────────
+    // OTP messages
+    if (RegExp(r'\b(otp|one.?time.?pass|verification code|do not share)\b',
+        caseSensitive: false).hasMatch(sms)) return false;
+    // Purely promotional / offer messages
+    if (RegExp(r'\b(offer|discount|cashback earn|win|congratulations|promo|voucher|coupon|reward points)\b',
+        caseSensitive: false).hasMatch(sms) &&
+        !RegExp(r'\b(debited|withdrawn|paid|sent|spent|purchase)\b',
+            caseSensitive: false).hasMatch(sms)) return false;
+    // Low-balance / account alerts that are NOT transactions
+    if (RegExp(r'\b(low balance|minimum balance|kyc|nominee|update your|linked|registered)\b',
+        caseSensitive: false).hasMatch(sms) &&
+        !RegExp(r'\b(debited|withdrawn|paid|sent|spent|purchase)\b',
+            caseSensitive: false).hasMatch(sms)) return false;
+
+    // ── Rule 1: must contain a real rupee amount ──────────
+    final hasAmount = RegExp(
+      r'(?:rs\.?\s*|inr\s*|₹\s*)[0-9,]+(?:\.[0-9]{1,2})?',
+      caseSensitive: false,
+    ).hasMatch(sms);
+    if (!hasAmount) return false;
+
+    // ── Rule 2: must have a debit/payment action word ─────
+    // "credited" alone is skipped — it's income, not expense
+    final hasDebitAction = RegExp(
+      r'\b(debited|debit|withdrawn|withdrawal|paid|sent|spent|purchase|purchased|deducted)\b',
+      caseSensitive: false,
+    ).hasMatch(sms);
+    if (!hasDebitAction) return false;
+
+    // ── Rule 3: must have bank/UPI signal ─────────────────
+    // Either a known bank sender pattern OR a UPI/txn ref
+    final hasBankSignal = RegExp(
+      r'\b(upi|imps|neft|rtgs|a/c|acct|account|hdfc|sbi|icici|axis|kotak|paytm|phonepe|gpay|amazon\s*pay|idfc|yes\s*bank|pnb|bob|canara|union\s*bank|indusind|federal|rbl)\b',
+      caseSensitive: false,
+    ).hasMatch(sms);
+
+    final hasTxnRef = RegExp(
+      r'\b(ref|txn|transaction\s*id|utr|order\s*id)[:\s#]*[a-z0-9]{6,}\b',
+      caseSensitive: false,
+    ).hasMatch(sms);
+
+    if (!hasBankSignal && !hasTxnRef) return false;
+
+    // ── All rules passed ──────────────────────────────────
+    return true;
   }
 
   // ── Extract amount + merchant from SMS body ──────────────
